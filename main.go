@@ -50,6 +50,11 @@ func handleConnection(conn net.Conn) {
 	if method == methodNoAcceptable {
 		return
 	}
+	if method == methodUserPass {
+		if err := authenticateUserPass(conn); err != nil {
+			return
+		}
+	}
 
 	// TODO: Implement SOCKS5 protocol
 	// 1. Read client greeting and negotiate authentication method
@@ -102,4 +107,44 @@ func requiredMethod() byte {
 		return methodUserPass
 	}
 	return methodNoAuth
+}
+
+// TODO 2 perform authentication if required (when PROXY_USER env var is set)
+// authenticateUserPass implements the RFC 1929 sub-negotiation. The
+// sub-negotiation version is 0x01 (NOT 0x05).
+func authenticateUserPass(conn net.Conn) error {
+	header := make([]byte, 2)
+	if _, err := io.ReadFull(conn, header); err != nil {
+		return err
+	}
+	if header[0] != authVersion {
+		_, _ = conn.Write([]byte{authVersion, 0x01})
+		return errors.New("bad auth version")
+	}
+	ulen := int(header[1])
+	uname := make([]byte, ulen)
+	if _, err := io.ReadFull(conn, uname); err != nil {
+		return err
+	}
+	plenBuf := make([]byte, 1)
+	if _, err := io.ReadFull(conn, plenBuf); err != nil {
+		return err
+	}
+	passwd := make([]byte, int(plenBuf[0]))
+	if _, err := io.ReadFull(conn, passwd); err != nil {
+		return err
+	}
+
+	expectedUser := os.Getenv("PROXY_USER")
+	expectedPass := os.Getenv("PROXY_PASS")
+
+	if string(uname) == expectedUser && string(passwd) == expectedPass {
+		if _, err := conn.Write([]byte{authVersion, 0x00}); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	_, _ = conn.Write([]byte{authVersion, 0x01})
+	return errors.New("invalid credentials")
 }
